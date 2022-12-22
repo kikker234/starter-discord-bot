@@ -1,113 +1,112 @@
+require("dotenv").config();
 
-// const { clientId, guildId, token, publicKey } = require('./config.json');
-require('dotenv').config()
-const APPLICATION_ID = process.env.APPLICATION_ID 
-const TOKEN = process.env.TOKEN 
-const PUBLIC_KEY = process.env.PUBLIC_KEY || 'not set'
-const GUILD_ID = process.env.GUILD_ID 
+const SUGGESTION_CHANNEL = ["1054868524612456490", "1055045412588896286"];
 
+const WHITELIST_TWITCH = "1055041634577956874";
+const NO_WHITELIST_TWITCH = "1055042133578485780";
 
-const axios = require('axios')
-const express = require('express');
-const { InteractionType, InteractionResponseType, verifyKeyMiddleware } = require('discord-interactions');
+const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions,
+  ],
+});
 
+client.login(process.env.TOKEN);
 
-const app = express();
-// app.use(bodyParser.json());
+client.on("ready", async (c) => {
+  cacheAll();
+  console.log("Bot launched successfully!");
+});
 
-const discord_api = axios.create({
-  baseURL: 'https://discord.com/api/',
-  timeout: 3000,
-  headers: {
-	"Access-Control-Allow-Origin": "*",
-	"Access-Control-Allow-Methods": "GET, POST, PUT, DELETE",
-	"Access-Control-Allow-Headers": "Authorization",
-	"Authorization": `Bot ${TOKEN}`
+client.on("messageReactionAdd", async (reaction) => {
+  let emote = reaction.emoji;
+  let message = emote.reaction.message;
+  let channel = emote.reaction.message.channelId;
+
+  if (!SUGGESTION_CHANNEL.includes(channel)) {
+    return;
+  }
+
+  if (emote.name == "✅" || emote.name == "❌") {
+    let isAccepted = emote.name == "✅";
+
+    let color = getColor(isAccepted);
+    let pronounce = getPronounce(isAccepted);
+
+    let userName;
+
+    reaction.users.cache.forEach((user) => {
+      userName = user.username;
+    });
+
+    let editedEmbed = message.embeds[0];
+
+    let embBuilder = new EmbedBuilder(editedEmbed)
+      .setColor(color)
+      .setFooter({ text: `${pronounce} door: ${userName}` });
+
+    message.edit({ embeds: [embBuilder] });
+    message.reactions.removeAll();
   }
 });
 
+client.on("messageCreate", (message) => {
+  let isRobot = message.author.bot;
+  let channel = message.channelId;
 
+  if (isRobot) return;
 
-
-app.post('/interactions', verifyKeyMiddleware(PUBLIC_KEY), async (req, res) => {
-  const interaction = req.body;
-
-  if (interaction.type === InteractionType.APPLICATION_COMMAND) {
-    console.log(interaction.data.name)
-    if(interaction.data.name == 'yo'){
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          content: `Yo ${interaction.member.user.username}!`,
-        },
-      });
-    }
-
-    if(interaction.data.name == 'dm'){
-      // https://discord.com/developers/docs/resources/user#create-dm
-      let c = (await discord_api.post(`/users/@me/channels`,{
-        recipient_id: interaction.member.user.id
-      })).data
-      try{
-        // https://discord.com/developers/docs/resources/channel#create-message
-        let res = await discord_api.post(`/channels/${c.id}/messages`,{
-          content:'Yo! I got your slash command. I am not able to respond to DMs just slash commands.',
-        })
-        console.log(res.data)
-      }catch(e){
-        console.log(e)
-      }
-
-      return res.send({
-        // https://discord.com/developers/docs/interactions/receiving-and-responding#responding-to-an-interaction
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data:{
-          content:'👍'
-        }
-      });
-    }
+  if (message.channelId == WHITELIST_TWITCH) {
+    client.channels.fetch(NO_WHITELIST_TWITCH).then((channel) => {
+      channel.send(message);
+    });
+    return;
   }
 
+  if (SUGGESTION_CHANNEL.includes(message.channelId)) {
+    let messageContent = message.content;
+    let name = message.author.username;
+    let iconURL = message.author.avatarURL();
+
+    let embed = new EmbedBuilder()
+      .setColor("#FAF9F6")
+      .setAuthor({ name: name, iconURL: iconURL })
+      .setDescription(messageContent)
+      .setTimestamp();
+
+    message.channel.send({ embeds: [embed] }).then((msg) => {
+      msg.react("👍");
+      msg.react("👎");
+      msg.startThread({
+        name: `Suggestie van: ` + name,
+        autoArchiveDuration: 60,
+        type: "GUILD_PUBLIC_THREAD",
+      });
+    });
+
+    message.delete();
+  }
 });
 
+function getColor(accepted) {
+  return accepted ? "#37eb34" : "#fd0037";
+}
 
+function getPronounce(accepted) {
+  return accepted ? "Goedgekeurd" : "Afgekeurd";
+}
 
-app.get('/register_commands', async (req,res) =>{
-  let slash_commands = [
-    {
-      "name": "yo",
-      "description": "replies with Yo!",
-      "options": []
-    },
-    {
-      "name": "dm",
-      "description": "sends user a DM",
-      "options": []
-    }
-  ]
-  try
-  {
-    // api docs - https://discord.com/developers/docs/interactions/application-commands#create-global-application-command
-    let discord_response = await discord_api.put(
-      `/applications/${APPLICATION_ID}/guilds/${GUILD_ID}/commands`,
-      slash_commands
-    )
-    console.log(discord_response.data)
-    return res.send('commands have been registered')
-  }catch(e){
-    console.error(e.code)
-    console.error(e.response?.data)
-    return res.send(`${e.code} error from discord`)
-  }
-})
+async function cacheAll() {
+  SUGGESTION_CHANNEL.forEach(async (channelId) => {
+    let channel = await client.channels.fetch(channelId);
+    let msgs = await channel.messages.fetch({ limit: 100 });
 
-
-app.get('/', async (req,res) =>{
-  return res.send('Follow documentation ')
-})
-
-
-app.listen(8999, () => {
-
-})
-
+    msgs.forEach((msg) => {
+      channel.fetch(msg.id);
+    });
+  });
+}
